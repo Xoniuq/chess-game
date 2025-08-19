@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chess with Stockfish AI</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.2/chess.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #board {
+            width: 500px;
+            margin: 0 auto 20px;
+        }
+        #evaluation {
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        #move-history {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .move-eval {
+            color: #666;
+            font-size: 0.8em;
+            margin-left: 5px;
+        }
+        .positive-eval {
+            color: green;
+        }
+        .negative-eval {
+            color: red;
+        }
+        #controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 5px 10px;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chess with Stockfish AI</h1>
+    
+    <div id="evaluation">
+        <strong>Evaluation:</strong> <span id="eval-text">0.00 (equal)</span>
+        <div id="eval-bar-container" style="width: 100%; height: 20px; background-color: #ddd; margin-top: 5px;">
+            <div id="eval-bar" style="height: 100%; width: 50%; background-color: #4CAF50;"></div>
+        </div>
+    </div>
+    
+    <div id="board"></div>
+    
+    <div id="controls">
+        <button id="startBtn">New Game</button>
+        <button id="flipBtn">Flip Board</button>
+        <button id="undoBtn">Undo Move</button>
+        <label for="skill">AI Level:</label>
+        <select id="skill">
+            <option value="1">1 (Easiest)</option>
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="15">15</option>
+            <option value="20">20 (Hardest)</option>
+        </select>
+    </div>
+    
+    <div id="move-history"></div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+    <script>
+        // Initialize chess.js game and chessboard.js board
+        const game = new Chess();
+        const board = Chessboard('board', {
+            position: 'start',
+            draggable: true,
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd
+        });
+        
+        // Stockfish Web Worker
+        const stockfish = new Worker('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js');
+        let skillLevel = 10;
+        
+        // Initialize UI elements
+        document.getElementById('startBtn').addEventListener('click', startNewGame);
+        document.getElementById('flipBtn').addEventListener('click', flipBoard);
+        document.getElementById('undoBtn').addEventListener('click', undoMove);
+        document.getElementById('skill').addEventListener('change', function() {
+            skillLevel = parseInt(this.value);
+            setSkillLevel();
+        });
+        
+        // Set up Stockfish
+        stockfish.onmessage = function(event) {
+            const message = event.data;
+            
+            // Handle evaluation info
+            if (message.startsWith('info depth') && message.includes('score cp') || message.includes('score mate')) {
+                updateEvaluation(message);
+            }
+            
+            // Handle best move
+            if (message.startsWith('bestmove')) {
+                const bestMove = message.split(' ')[1];
+                if (bestMove && bestMove !== '(none)') {
+                    setTimeout(() => {
+                        makeAIMove(bestMove);
+                    }, 500);
+                }
+            }
+        };
+        
+        function setSkillLevel() {
+            stockfish.postMessage(`setoption name Skill Level value ${skillLevel}`);
+        }
+        
+        function startNewGame() {
+            game.reset();
+            board.position(game.fen());
+            document.getElementById('move-history').innerHTML = '';
+            updateEvaluation('');
+            if (game.turn() === 'b') {
+                getAIMove();
+            }
+        }
+        
+        function flipBoard() {
+            board.flip();
+        }
+        
+        function undoMove() {
+            game.undo();
+            game.undo(); // Undo both player and AI move
+            board.position(game.fen());
+            if (game.turn() === 'b') {
+                getAIMove();
+            }
+        }
+        
+        function onDragStart(source, piece, position, orientation) {
+            // Only allow moves when it's the player's turn
+            if (game.isGameOver()) return false;
+            if ((game.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (game.turn() === 'b' && piece.search(/^w/) !== -1)) {
+                return false;
+            }
+        }
+        
+        function onDrop(source, target) {
+            // Try to make the move
+            const move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q' // Always promote to queen for simplicity
+            });
+            
+            // If illegal move, snap back
+            if (move === null) return 'snapback';
+            
+            // Update move history
+            updateMoveHistory();
+            
+            // Get AI move after a short delay
+            setTimeout(getAIMove, 250);
+        }
+        
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+        
+        function getAIMove() {
+            if (game.isGameOver()) return;
+            
+            // Ask Stockfish for the best move
+            stockfish.postMessage('position fen ' + game.fen());
+            stockfish.postMessage('go depth 15');
+        }
+        
+        function makeAIMove(move) {
+            if (game.isGameOver()) return;
+            
+            const chessMove = game.move(move);
+            if (chessMove === null) return;
+            
+            board.position(game.fen());
+            updateMoveHistory();
+            
+            // Check for game over
+            if (game.isGameOver()) {
+                let result = 'Game over - ';
+                if (game.isCheckmate()) {
+                    result += 'Checkmate: ' + (game.turn() === 'w' ? 'Black wins' : 'White wins');
+                } else if (game.isDraw()) {
+                    result += 'Draw';
+                    if (game.isStalemate()) result += ' - Stalemate';
+                    if (game.isThreefoldRepetition()) result += ' - Threefold repetition';
+                    if (game.isInsufficientMaterial()) result += ' - Insufficient material';
+                }
+                document.getElementById('eval-text').textContent = result;
+            }
+        }
+        
+        function updateEvaluation(message) {
+            if (!message) {
+                document.getElementById('eval-text').textContent = '0.00 (equal)';
+                document.getElementById('eval-bar').style.width = '50%';
+                document.getElementById('eval-bar').style.backgroundColor = '#4CAF50';
+                return;
+            }
+            
+            let cp, mate;
+            if (message.includes('score cp')) {
+                cp = parseFloat(message.match(/score cp (-?\d+)/)[1]) / 100;
+            } else if (message.includes('score mate')) {
+                mate = parseInt(message.match(/score mate (-?\d+)/)[1]);
+            }
+            
+            let evalText, evalPercent;
+            if (mate !== undefined) {
+                if (mate > 0) {
+                    evalText = `Mate in ${mate} for White`;
+                    evalPercent = 100;
+                } else {
+                    evalText = `Mate in ${Math.abs(mate)} for Black`;
+                    evalPercent = 0;
+                }
+            } else {
+                evalText = cp.toFixed(2);
+                if (cp > 0) {
+                    evalText += ' (White is better)';
+                } else if (cp < 0) {
+                    evalText += ' (Black is better)';
+                } else {
+                    evalText += ' (equal)';
+                }
+                
+                // Calculate percentage for eval bar (clamped between 0.1% and 99.9%)
+                evalPercent = 50 + (cp * 5); // Scale factor to make differences visible
+                evalPercent = Math.max(0.1, Math.min(99.9, evalPercent));
+            }
+            
+            document.getElementById('eval-text').textContent = evalText;
+            document.getElementById('eval-bar').style.width = `${evalPercent}%`;
+            document.getElementById('eval-bar').style.backgroundColor = cp >= 0 ? '#4CAF50' : '#f44336';
+        }
+        
+        function updateMoveHistory() {
+            const moveHistory = document.getElementById('move-history');
+            const moves = game.history();
+            const evaluations = [];
+            
+            // Get evaluations for all moves
+            for (let i = 0; i < moves.length; i++) {
+                const tempGame = new Chess();
+                for (let j = 0; j <= i; j++) {
+                    tempGame.move(moves[j]);
+                }
+                evaluations.push(getEvaluationForPosition(tempGame.fen()));
+            }
+            
+            // Format move history
+            let html = '<table>';
+            for (let i = 0; i < moves.length; i += 2) {
+                html += '<tr>';
+                html += `<td>${Math.floor(i/2) + 1}.</td>`;
+                html += `<td>${moves[i]}</td>`;
+                if (i < evaluations.length) {
+                    html += `<td><span class="move-eval ${getEvalClass(evaluations[i])}">${formatEval(evaluations[i])}</span></td>`;
+                }
+                
+                if (i + 1 < moves.length) {
+                    html += `<td>${moves[i+1]}</td>`;
+                    if (i + 1 < evaluations.length) {
+                        html += `<td><span class="move-eval ${getEvalClass(evaluations[i+1])}">${formatEval(evaluations[i+1])}</span></td>`;
+                    }
+                }
+                html += '</tr>';
+            }
+            html += '</table>';
+            
+            moveHistory.innerHTML = html;
+            moveHistory.scrollTop = moveHistory.scrollHeight;
+        }
+        
+        function getEvaluationForPosition(fen) {
+            // This is a simplified version - in a real app you'd want to cache evaluations
+            // or get them from Stockfish in a more sophisticated way
+            const tempGame = new Chess(fen);
+            if (tempGame.isCheckmate()) {
+                return tempGame.turn() === 'w' ? -1000 : 1000; // Negative for black mate, positive for white
+            }
+            if (tempGame.isDraw()) {
+                return 0;
+            }
+            
+            // Very simple material evaluation
+            let eval = 0;
+            const pieceValues = { p: -1, n: -3, b: -3, r: -5, q: -9, k: 0 };
+            
+            for (let i = 0; i < 8; i++) {
+                for (let j = 0; j < 8; j++) {
+                    const piece = tempGame.get(String.fromCharCode(97 + j) + (8 - i));
+                    if (piece) {
+                        const value = pieceValues[piece.type.toLowerCase()];
+                        eval += piece.color === 'w' ? value : -value;
+                    }
+                }
+            }
+            
+            return eval;
+        }
+        
+        function formatEval(eval) {
+            if (eval === 1000) return 'Mate';
+            if (eval === -1000) return 'Mate';
+            return eval > 0 ? `+${eval.toFixed(1)}` : eval.toFixed(1);
+        }
+        
+        function getEvalClass(eval) {
+            if (eval > 1) return 'positive-eval';
+            if (eval < -1) return 'negative-eval';
+            return '';
+        }
+        
+        // Initialize the game
+        startNewGame();
+        setSkillLevel();
+    </script>
+</body>
+</html>
